@@ -134,8 +134,22 @@ VIEWER_HTML = """<!doctype html>
       pz = panzoom(svg, { maxZoom: 20, minZoom: 0.1, zoomDoubleClickSpeed: 1, smoothScroll: false });
     }
     // Click to zoom: a real click (not a pan) on a node centers + zooms it;
-    // clicking empty diagram area fits the whole diagram.
+    // clicking empty diagram area fits the whole diagram. Track mousedown
+    // position so a drag doesn't get interpreted as a click — browsers fire
+    // a click event on any same-element mouseup, drag distance be damned.
+    let mouseDownPos = null;
+    const CLICK_THRESHOLD_PX = 4;
+    svg.addEventListener('mousedown', (e) => {
+      mouseDownPos = { x: e.clientX, y: e.clientY };
+    });
     svg.addEventListener('click', (e) => {
+      const start = mouseDownPos;
+      mouseDownPos = null;
+      if (start) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if ((dx*dx + dy*dy) > CLICK_THRESHOLD_PX * CLICK_THRESHOLD_PX) return;
+      }
       const node = e.target.closest('g.node, g.cluster');
       if (node) {
         zoomToNode(node);
