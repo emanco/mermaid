@@ -3,9 +3,11 @@ import http.server
 import html
 import json
 import re
+import shutil
 import socketserver
 import subprocess
 import threading
+import time
 import zlib
 from pathlib import Path
 
@@ -32,7 +34,10 @@ VIEWER_HTML = """<!doctype html>
   #hud { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%);
          background: rgba(0,0,0,0.55); color: #fff; font-size: 11px;
          padding: 4px 12px; border-radius: 4px; pointer-events: none;
-         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; z-index: 10; }
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; z-index: 10;
+         white-space: nowrap; }
+  #hud .live { color: #6f6; font-weight: 600; }
+  #hud .stale { color: #fc6; font-weight: 600; }
   #annotations { width: 340px; flex-shrink: 0; background: #fff;
                  border-left: 1px solid #e5e5e5; padding: 16px 18px 24px;
                  overflow-y: auto; box-sizing: border-box; }
@@ -53,17 +58,21 @@ VIEWER_HTML = """<!doctype html>
 <div id="app">
   <div id="diagram">
     <div id="root"><div id="placeholder">Waiting for first diagram&hellip;</div></div>
-    <div id="hud">click: zoom node &middot; scroll: zoom &middot; drag: pan &middot; R: reset &middot; F: fit &middot; H: toggle panel</div>
+    <div id="hud"><span class="status">no diagram yet</span> &middot; &larr;/&rarr;: history &middot; End/L: live &middot; click: zoom node &middot; drag: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel</div>
   </div>
   <aside id="annotations"><span class="empty">No annotations yet.</span></aside>
 </div>
 <script>
   const root = document.getElementById('root');
   const annotations = document.getElementById('annotations');
-  let lastSvg = '';
-  let lastAnn = '';
+  const hud = document.getElementById('hud');
   let pz = null;
   let currentSvg = null;
+  let history = [];
+  let currentIdx = -1;       // -1 means no version loaded yet
+  let lastHistoryStr = '';
+  let lastSvgUrl = '';
+  let lastAnnUrl = '';
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -184,33 +193,79 @@ VIEWER_HTML = """<!doctype html>
     annotations.innerHTML = parts.join('');
   }
 
-  async function tick() {
-    try {
-      const res = await fetch('diagram.svg?t=' + Date.now(), { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text !== lastSvg) {
-          lastSvg = text;
-          mountSvg(text);
+  function isLive() { return history.length > 0 && currentIdx === history.length - 1; }
+
+  function updateHud() {
+    let status;
+    if (history.length === 0) {
+      status = '<span class="status">no diagram yet</span>';
+    } else if (isLive()) {
+      status = `<span class="live">v${currentIdx + 1}/${history.length} LIVE</span>`;
+    } else {
+      const newer = history.length - 1 - currentIdx;
+      status = `<span class="stale">v${currentIdx + 1}/${history.length} history (+${newer} newer)</span>`;
+    }
+    hud.innerHTML = status + ' &middot; &larr;/&rarr;: history &middot; End/L: live &middot; click: zoom node &middot; drag: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel';
+  }
+
+  async function loadVersion(idx) {
+    if (idx < 0 || idx >= history.length) return;
+    const v = history[idx];
+    if (v.svg !== lastSvgUrl) {
+      try {
+        const r = await fetch(v.svg + '?t=' + Date.now(), { cache: 'no-store' });
+        if (r.ok) {
+          const text = await r.text();
+          if (text) { mountSvg(text); lastSvgUrl = v.svg; }
         }
-      }
-    } catch (_) {}
-    try {
-      const res = await fetch('annotations.json?t=' + Date.now(), { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        if (text !== lastAnn) {
-          lastAnn = text;
+      } catch (_) {}
+    }
+    if (v.ann !== lastAnnUrl) {
+      try {
+        const r = await fetch(v.ann + '?t=' + Date.now(), { cache: 'no-store' });
+        if (r.ok) {
+          const text = await r.text();
           renderAnnotations(JSON.parse(text));
+          lastAnnUrl = v.ann;
         }
+      } catch (_) {}
+    }
+    currentIdx = idx;
+    updateHud();
+  }
+
+  async function pollHistory() {
+    try {
+      const res = await fetch('history.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return;
+      const text = await res.text();
+      if (text === lastHistoryStr) return;
+      lastHistoryStr = text;
+      const parsed = JSON.parse(text);
+      // Was the user at the latest before this poll? Auto-advance only then;
+      // if they've scrubbed back, keep them parked and just update the HUD.
+      const wasLive = currentIdx < 0 || (history.length > 0 && currentIdx === history.length - 1);
+      history = parsed;
+      if (wasLive && history.length > 0) {
+        await loadVersion(history.length - 1);
+      } else {
+        updateHud();
       }
     } catch (_) {}
   }
-  setInterval(tick, 1000);
-  tick();
+
+  setInterval(pollHistory, 1000);
+  pollHistory();
 
   document.addEventListener('keydown', e => {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (e.key === 'ArrowLeft' && currentIdx > 0) { loadVersion(currentIdx - 1); return; }
+    if (e.key === 'ArrowRight' && currentIdx < history.length - 1) { loadVersion(currentIdx + 1); return; }
+    if ((e.key === 'End' || e.key.toLowerCase() === 'l') && history.length > 0) {
+      loadVersion(history.length - 1);
+      return;
+    }
+    if (e.key === 'Home' && history.length > 0) { loadVersion(0); return; }
     const k = e.key.toLowerCase();
     if (k === 'r') {
       if (!pz) return;
@@ -221,7 +276,6 @@ VIEWER_HTML = """<!doctype html>
       fitToContent();
     } else if (k === 'h') {
       annotations.classList.toggle('hidden');
-      // Re-fit after layout change so the diagram reclaims the room.
       requestAnimationFrame(fitToContent);
     }
   });
@@ -293,17 +347,26 @@ class MermaidViewer:
         self.svg_path = self.dir / "diagram.svg"
         self.annotations_path = self.dir / "annotations.json"
         self.html_path = self.dir / "viewer.html"
+        self.history_dir = self.dir / "history"
+        self.history_index_path = self.dir / "history.json"
         self.url = f"http://127.0.0.1:{config.viewer_port}/viewer.html"
         self._httpd: socketserver.TCPServer | None = None
         self._thread: threading.Thread | None = None
+        self._version: int = 0
 
     async def start(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         self.html_path.write_text(VIEWER_HTML)
-        # Clear any stale SVG / annotations from a previous run so the viewer
-        # shows the "Waiting…" placeholder instead of stale (possibly error) state.
+        # Clear any stale SVG / annotations / history from a previous run so
+        # the viewer starts clean instead of showing a stale (possibly error)
+        # diagram from last session.
         self.svg_path.unlink(missing_ok=True)
         self.annotations_path.unlink(missing_ok=True)
+        if self.history_dir.exists():
+            shutil.rmtree(self.history_dir)
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+        self.history_index_path.write_text("[]")
+        self._version = 0
 
         directory = str(self.dir)
 
@@ -355,9 +418,11 @@ class MermaidViewer:
             ))
             return
 
+        annotations = _extract_annotations(mermaid_code)
         self._write(svg)
-        self._write_annotations(_extract_annotations(mermaid_code))
-        log.info(f"Rendered diagram ({len(svg)} bytes) via {backend}")
+        self._write_annotations(annotations)
+        self._append_history(svg, annotations)
+        log.info(f"Rendered diagram v{self._version} ({len(svg)} bytes) via {backend}")
 
     async def _render_mermaid_ink(self, mermaid_code: str) -> bytes:
         # mermaid.ink's `pako:` prefix accepts a JSON-wrapped payload
@@ -393,6 +458,28 @@ class MermaidViewer:
         tmp = self.annotations_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(items, ensure_ascii=False))
         tmp.replace(self.annotations_path)
+
+    def _append_history(self, svg: bytes, annotations: list[dict]):
+        """Write a versioned snapshot and update the history index."""
+        self._version += 1
+        v = self._version
+        svg_name = f"diagram-{v:04d}.svg"
+        ann_name = f"annotations-{v:04d}.json"
+        (self.history_dir / svg_name).write_bytes(svg)
+        (self.history_dir / ann_name).write_text(json.dumps(annotations, ensure_ascii=False))
+        try:
+            idx = json.loads(self.history_index_path.read_text())
+        except Exception:
+            idx = []
+        idx.append({
+            "version": v,
+            "ts": time.time(),
+            "svg": f"history/{svg_name}",
+            "ann": f"history/{ann_name}",
+        })
+        tmp = self.history_index_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(idx, ensure_ascii=False))
+        tmp.replace(self.history_index_path)
 
     def stop(self):
         if self._httpd:
