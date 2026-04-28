@@ -41,29 +41,61 @@ class DiagramGenerator:
         self._generating = False
 
     async def on_new_transcript(self):
-        # Auto-draw only the first diagram. Once a diagram exists,
-        # redraws must be triggered by the Ctrl+Shift+M shortcut.
-        if state.get_diagram():
-            return
-        if self.context.char_count() < config.min_context_chars_for_auto_draw:
+        # Hands-free: schedule a debounced regen on every new transcript line.
+        # The debounce coalesces rapid lines into one call, the char-delta gate
+        # in _generate skips when too little has changed, and a Haiku
+        # "should we update?" gate skips when the delta is non-architectural.
+        # First-draw still requires the minimum-context threshold to avoid
+        # drawing from a 3-word fragment.
+        if not state.get_diagram() and self.context.char_count() < config.min_context_chars_for_auto_draw:
             return
         if self._debounce_task and not self._debounce_task.done():
             return
         self._debounce_task = asyncio.create_task(self._debounced_generate())
 
     async def force_generate(self):
+        # Ctrl+Shift+M: emergency override — bypass both the char-delta and
+        # Haiku gates, always run a full Sonnet regen.
         if self._debounce_task and not self._debounce_task.done():
             self._debounce_task.cancel()
-        await self._generate()
+        await self._generate(force=True)
 
     async def _debounced_generate(self):
         try:
             await asyncio.sleep(config.debounce_seconds)
-            await self._generate()
+            await self._generate(force=False)
         except asyncio.CancelledError:
             pass
 
-    async def _generate(self):
+    async def _should_update(self, current_diagram: str, delta: str) -> bool:
+        """Cheap Haiku call: does this transcript delta merit a full regen?"""
+        prompt = (
+            "You decide whether a Mermaid system-design diagram should be regenerated "
+            "based on a new chunk of interview transcript.\n\n"
+            "Reply on ONE line in EXACTLY this form: 'YES: <reason>' or 'NO: <reason>'.\n\n"
+            "Reply YES if the new transcript adds architectural information worth reflecting "
+            "(new component, requirement, constraint, scale number, trade-off, edge case, "
+            "data flow, correction, or interviewer pushback that changes a decision).\n\n"
+            "Reply NO for small talk, clarifications of already-captured info, the interviewer "
+            "pressing on existing decisions without new info, generic thinking aloud, or filler.\n\n"
+            f"CURRENT DIAGRAM:\n{current_diagram}\n\n"
+            f"NEW TRANSCRIPT:\n{delta}"
+        )
+        try:
+            response = await self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = response.content[0].text.strip()
+            decision = answer.upper().startswith("YES")
+            log.info(f"Haiku gate: {answer[:140]}")
+            return decision
+        except Exception as e:
+            log.warning(f"Haiku gate failed ({e}); defaulting to update")
+            return True  # fail open — better to redraw than miss an update
+
+    async def _generate(self, force: bool = False):
         if self._generating:
             return
         if not self.context.has_new_content():
@@ -74,6 +106,21 @@ class DiagramGenerator:
         try:
             transcript = self.context.get_context()
             current = state.get_diagram()
+
+            # Smart gates (skipped for force=True from Ctrl+Shift+M):
+            # 1) Char-delta gate — don't even consider a regen for tiny deltas;
+            #    let them accumulate. Don't mark_generated, so the delta keeps growing.
+            # 2) Haiku gate — ask a cheap model whether the delta adds architectural info.
+            #    If NO, mark_generated (consume the delta) and return.
+            if current and not force:
+                delta_chars = self.context.new_chars_since_generated()
+                if delta_chars < config.min_delta_chars_for_update:
+                    log.debug(f"Skip: only {delta_chars} new chars since last update")
+                    return
+                delta = self.context.get_delta()
+                if not await self._should_update(current, delta):
+                    self.context.mark_generated()
+                    return
 
             log.info("Generating diagram update...")
             user_prompt = build_user_prompt(transcript, current)

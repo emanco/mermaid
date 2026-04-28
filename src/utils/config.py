@@ -14,6 +14,7 @@ class Config:
     debounce_seconds: float = field(default_factory=lambda: float(os.getenv("DEBOUNCE_SECONDS", "8")))
     max_context_tokens: int = field(default_factory=lambda: int(os.getenv("MAX_CONTEXT_TOKENS", "6000")))
     min_context_chars_for_auto_draw: int = field(default_factory=lambda: int(os.getenv("MIN_CONTEXT_CHARS_FOR_AUTO_DRAW", "400")))
+    min_delta_chars_for_update: int = field(default_factory=lambda: int(os.getenv("MIN_DELTA_CHARS_FOR_UPDATE", "80")))
     render_backend: str = field(default_factory=lambda: os.getenv("RENDER_BACKEND", "mermaid_ink"))
     render_url: str = field(default_factory=lambda: os.getenv("RENDER_URL", "https://mermaid.ink/svg"))
     viewer_dir: str = field(default_factory=lambda: os.getenv("VIEWER_DIR", "~/.cache/audio-to-mermaid"))

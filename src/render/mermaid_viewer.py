@@ -117,7 +117,11 @@ VIEWER_HTML = """<!doctype html>
     }
   }
 
+  let isFirstMount = true;
   function mountSvg(text) {
+    // Preserve the user's pan/zoom across re-mounts so auto-updates don't
+    // snap the view back. Capture the current transform before disposing.
+    const savedTransform = pz ? pz.getTransform() : null;
     if (pz) { pz.dispose(); pz = null; }
     root.innerHTML = text;
     const svg = root.querySelector('svg');
@@ -132,7 +136,15 @@ VIEWER_HTML = """<!doctype html>
     fitToContent();
     if (window.panzoom) {
       pz = panzoom(svg, { maxZoom: 20, minZoom: 0.1, zoomDoubleClickSpeed: 1, smoothScroll: false });
+      if (savedTransform && !isFirstMount) {
+        // Restore previous view. Approximate — if the diagram structure changed
+        // significantly, the visible content under the same transform shifts.
+        // Use F to re-fit, or click the empty area.
+        pz.zoomAbs(0, 0, savedTransform.scale);
+        pz.moveTo(savedTransform.x, savedTransform.y);
+      }
     }
+    isFirstMount = false;
     // Click to zoom: a real click (not a pan) on a node centers + zooms it;
     // clicking empty diagram area fits the whole diagram. Track mousedown
     // position so a drag doesn't get interpreted as a click — browsers fire

@@ -27,6 +27,21 @@ class ContextManager:
         with self._lock:
             return sum(len(line) for line in self._lines)
 
+    def get_delta(self) -> str:
+        """The transcript lines added since the last `mark_generated()`."""
+        with self._lock:
+            n = self._new_lines_since_last_generate
+            if n <= 0:
+                return ""
+            return "\n".join(self._lines[-n:])
+
+    def new_chars_since_generated(self) -> int:
+        with self._lock:
+            n = self._new_lines_since_last_generate
+            if n <= 0:
+                return 0
+            return sum(len(line) for line in self._lines[-n:])
+
     def mark_generated(self):
         with self._lock:
             self._new_lines_since_last_generate = 0

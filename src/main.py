@@ -77,8 +77,8 @@ class App:
 
         log.info("")
         log.info("Ready! Listening for audio.")
-        log.info("First diagram will auto-draw once enough has been said.")
-        log.info("Press Ctrl+Shift+M to redraw afterwards.")
+        log.info("Diagram updates hands-free as the conversation evolves.")
+        log.info("Press Ctrl+Shift+M to force a redraw immediately.")
         log.info("Press Ctrl+C to quit.")
         log.info("")
 
