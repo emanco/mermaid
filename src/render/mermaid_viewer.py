@@ -58,7 +58,7 @@ VIEWER_HTML = """<!doctype html>
 <div id="app">
   <div id="diagram">
     <div id="root"><div id="placeholder">Waiting for first diagram&hellip;</div></div>
-    <div id="hud"><span class="status">no diagram yet</span> &middot; &larr;/&rarr;: history &middot; End/L: live &middot; click: zoom node &middot; drag: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel</div>
+    <div id="hud"><span class="status">no diagram yet</span> &middot; [ / ]: history &middot; End/L: live &middot; click: zoom node &middot; drag/&larr;&rarr;: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel</div>
   </div>
   <aside id="annotations"><span class="empty">No annotations yet.</span></aside>
 </div>
@@ -205,7 +205,7 @@ VIEWER_HTML = """<!doctype html>
       const newer = history.length - 1 - currentIdx;
       status = `<span class="stale">v${currentIdx + 1}/${history.length} history (+${newer} newer)</span>`;
     }
-    hud.innerHTML = status + ' &middot; &larr;/&rarr;: history &middot; End/L: live &middot; click: zoom node &middot; drag: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel';
+    hud.innerHTML = status + ' &middot; [ / ]: history &middot; End/L: live &middot; click: zoom node &middot; drag/&larr;&rarr;: pan &middot; scroll: zoom &middot; R: reset &middot; F: fit &middot; H: panel';
   }
 
   async function loadVersion(idx) {
@@ -259,24 +259,31 @@ VIEWER_HTML = """<!doctype html>
 
   document.addEventListener('keydown', e => {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-    if (e.key === 'ArrowLeft' && currentIdx > 0) { loadVersion(currentIdx - 1); return; }
-    if (e.key === 'ArrowRight' && currentIdx < history.length - 1) { loadVersion(currentIdx + 1); return; }
-    if ((e.key === 'End' || e.key.toLowerCase() === 'l') && history.length > 0) {
-      loadVersion(history.length - 1);
-      return;
+    // History nav uses [ and ] so arrows stay free for panzoom's nudge-pan
+    // (panzoom binds arrows once the SVG receives focus — typically after a click).
+    if (e.key === '[' && currentIdx > 0) {
+      loadVersion(currentIdx - 1); e.preventDefault(); return;
     }
-    if (e.key === 'Home' && history.length > 0) { loadVersion(0); return; }
+    if (e.key === ']' && currentIdx < history.length - 1) {
+      loadVersion(currentIdx + 1); e.preventDefault(); return;
+    }
+    if ((e.key === 'End' || e.key.toLowerCase() === 'l') && history.length > 0) {
+      loadVersion(history.length - 1); e.preventDefault(); return;
+    }
+    if (e.key === 'Home' && history.length > 0) { loadVersion(0); e.preventDefault(); return; }
     const k = e.key.toLowerCase();
     if (k === 'r') {
       if (!pz) return;
       const t = pz.getTransform();
       pz.moveBy(-t.x, -t.y, false);
       pz.zoomAbs(0, 0, 1);
+      e.preventDefault();
     } else if (k === 'f') {
-      fitToContent();
+      fitToContent(); e.preventDefault();
     } else if (k === 'h') {
       annotations.classList.toggle('hidden');
       requestAnimationFrame(fitToContent);
+      e.preventDefault();
     }
   });
 </script>
